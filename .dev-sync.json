@@ -1,0 +1,96 @@
+{
+  "project": "TearDown - Physics Destruction Game",
+  "branch": "claude/game-physics-simulation-20q4yj",
+  "synchronization": {
+    "protocol": "Event-Bus (non-blocking, async)",
+    "updateRate": "60 FPS",
+    "messageOrderingByVersion": true,
+    "priorityQueue": true
+  },
+  "roles": {
+    "DEV_A": {
+      "name": "Rendering & Visualization Engine",
+      "files": [
+        "src/rendering/VoxelChunkRenderer.ts",
+        "src/shared/sync-protocol.ts"
+      ],
+      "responsibilities": [
+        "Voxel 3D-Rendering (Three.js)",
+        "Fragment-Visualisierung",
+        "User Input (Klicks → Zerstörungs-Anfrage)",
+        "Performance-Optimierung"
+      ],
+      "emits": [
+        "render:destruction_input",
+        "render:chunk_bounds_updated",
+        "render:ready"
+      ],
+      "listensTo": [
+        "physics:step_complete",
+        "physics:destruction_triggered",
+        "physics:fragment_created"
+      ]
+    },
+    "DEV_B": {
+      "name": "Physics & Destruction Engine",
+      "files": [
+        "src/physics/DestructionPhysics.ts",
+        "src/shared/sync-protocol.ts"
+      ],
+      "responsibilities": [
+        "RAPIER3D Physics-Simulation",
+        "Zerstörungs-Logik & Fragmentierung",
+        "Impact-Detection",
+        "Constraint-Systeme"
+      ],
+      "emits": [
+        "physics:step_complete",
+        "physics:destruction_triggered",
+        "physics:fragment_created",
+        "physics:world_state_changed"
+      ],
+      "listensTo": [
+        "render:destruction_input",
+        "render:chunk_bounds_updated"
+      ]
+    }
+  },
+  "communication": {
+    "pattern": "Event-based pub/sub",
+    "nonBlocking": true,
+    "async": true,
+    "constraints": [
+      "DEV A emits → DEV B verarbeitet in nächstem Physics-Frame",
+      "DEV B emits → DEV A verarbeitet in nächstem Render-Frame",
+      "HIGH Priority Events (Destruktion) bekommen Priorität",
+      "Keine direkten Object-Zugriffe zwischen A und B"
+    ]
+  },
+  "workflow": {
+    "perFrame": [
+      "1. DEV B: stepPhysics() (synchron)",
+      "2. DEV B: emit PHYSICS_STEP_COMPLETE (async, non-blocking)",
+      "3. DEV B: emit DESTRUCTION_TRIGGERED falls nötig (async, HIGH PRIORITY)",
+      "4. DEV A: onPhysicsUpdate() (async listener)",
+      "5. DEV A: renderer.render() (synchron mit Three.js)",
+      "6. DEV A: onUserInput() emits render:destruction_input (async)",
+      "7. DEV B: async listener empfängt und verarbeitet"
+    ]
+  },
+  "integration": {
+    "syncBus": "src/shared/sync-protocol.ts (global singleton)",
+    "mainLoop": "src/main.ts (orchestriert beide)",
+    "messaging": "Event-Queue mit Priority System"
+  },
+  "currentStatus": {
+    "DEV_A": "VoxelChunkRenderer ready for input handlers",
+    "DEV_B": "DestructionPhysics ready for event emission",
+    "Sync": "Ready to integrate"
+  },
+  "rules": {
+    "blocking": "❌ NIE",
+    "communication": "✅ ALWAYS async via SyncEventBus",
+    "state_sharing": "✅ Via messages only",
+    "race_conditions": "❌ Verhindert durch message versioning"
+  }
+}
