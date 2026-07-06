@@ -38,10 +38,11 @@ async function bootstrap() {
   await devB_Physics.init();
   console.log('[MAIN] DEV B (Physics) initialized');
 
-  // DEV A: Create initial structure
+  // DEV A: Create initial structure and setup input handling
   devA_Renderer.createInitialBuilding(5, 10, 5);
+  devA_Renderer.setupInputHandling(camera);
   scene.add(devA_Renderer.mesh);
-  console.log('[MAIN] DEV A (Renderer) initialized');
+  console.log('[MAIN] DEV A (Renderer) initialized with click input');
 
   // UI Info
   document.getElementById('info')!.innerText = 'ENGINE RUNNING: Click to destroy (Ready)';
