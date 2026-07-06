@@ -12,112 +12,178 @@ import {
  * DEV A — Rendering & Visualization
  *
  * Responsibilities:
- * - Voxel mesh generation (createInitialBuilding)
- * - Click-to-destroy input → emits USER_DESTRUCTION_INPUT   [PHASE1-A1]
- * - Destruction rendering: remove voxels, spawn fragments    [PHASE1-A2]
- * - Fragment tracking & animation (id → mesh map)            [PHASE1-A3]
+ * - Voxel rendering via a single InstancedMesh (1 draw call for the building)
+ * - Click-to-destroy input → emits USER_DESTRUCTION_INPUT
+ * - Destruction rendering: remove voxel instances, spawn fragment instances
+ * - Fragment tracking & animation (1 draw call for ALL debris)
+ * - HUD (voxel / debris counters)
  *
  * Communication with DEV B: ONLY via SyncEventBus (see CLAUDE.md).
  *
  * Performance contract (skill rules R3/R4):
+ * - Building and debris are two InstancedMesh objects — draw calls do NOT
+ *   grow with voxel count. Instance removal is O(1) swap-with-last.
  * - Voxels are indexed in a Map keyed "x|y|z" (same format as DEV B's
  *   structural model) — destruction removal and click picking are bounded
  *   lookups, never full-scene scans.
  * - Click picking uses a 3D-DDA grid ray-march (Amanatides & Woo) through
- *   the voxel hash instead of raycasting N meshes.
- * - The per-frame step_complete listener is synchronous, iterates with
- *   for..in (no Object.entries allocation), and copies transform values
- *   immediately (DEV B reuses the payload object across frames).
- * - update() iterates only fragments that still need fallback animation.
+ *   the voxel hash instead of raycasting meshes.
+ * - Per-frame paths allocate nothing: scratch Matrix4/Quaternion/Vector3
+ *   objects are reused, the step_complete listener is synchronous and
+ *   copies values immediately (DEV B reuses the payload across frames).
  */
 
 interface TrackedFragment {
-  mesh: THREE.Mesh;
+  position: THREE.Vector3;
   velocity: THREE.Vector3;
   angularVelocity: THREE.Vector3;
+  rotX: number;
+  rotY: number;
+  rotZ: number;
   physicsDriven: boolean; // true once DEV B owns this fragment's transform
 }
 
 const FRAGMENT_KILL_Y = -20; // fallback-cleanup below this height
 const FRAGMENT_SIZE = 0.5;
+const HUD_UPDATE_INTERVAL = 30; // frames between HUD text refreshes
 
 export class VoxelChunkRenderer {
   public mesh: THREE.Group;
 
-  private voxelGroup: THREE.Group;
-  private fragmentGroup: THREE.Group;
   private camera?: THREE.Camera;
   private raycaster = new THREE.Raycaster();
 
-  // R4: voxel lookup keyed "x|y|z" (identical to DEV B's voxelKey format)
-  private voxelMeshes = new Map<string, THREE.Mesh>();
+  // ---- Building (InstancedMesh + spatial hash) ----
+  private voxelInstances!: THREE.InstancedMesh;
+  private voxelSlots = new Map<string, number>(); // "x|y|z" → instance slot
+  private voxelSlotKeys: string[] = [];           // slot → "x|y|z"
   private buildingBounds = { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 };
 
-  // PHASE1-A3: fragmentId → mesh tracking
-  private fragments = new Map<string, TrackedFragment>();
-  // Only fragments in here still run the local fallback animation
-  private fallbackFragments = new Set<string>();
-  // Reused scratch buffer for per-frame cleanup (R3: no per-frame allocation)
-  private cullScratch: string[] = [];
+  // ---- Debris (InstancedMesh, shared by falling fragments AND static rubble) ----
+  private fragmentInstances!: THREE.InstancedMesh;
+  private fragSlots = new Map<string, number>();  // fragmentId → instance slot
+  private fragSlotOwner: string[] = [];           // slot → fragmentId
+  private fragCount = 0;
 
-  // Gravity comes from DEV B via WORLD_STATE_CHANGED (only used as visual
-  // fallback until physics transforms arrive)
+  // Only awake/fallback fragments are tracked per frame; settled rubble
+  // keeps its instance slot but leaves all per-frame bookkeeping.
+  private fragments = new Map<string, TrackedFragment>();
+  private fallbackFragments = new Set<string>();
+  private settledCount = 0;
+
+  // R3: reused scratch objects — per-frame paths allocate nothing
+  private cullScratch: string[] = [];
+  private scratchMatrix = new THREE.Matrix4();
+  private scratchQuat = new THREE.Quaternion();
+  private scratchVec = new THREE.Vector3();
+  private scratchEuler = new THREE.Euler();
+  private static readonly UNIT_SCALE = new THREE.Vector3(1, 1, 1);
+
+  // Click-vs-drag discrimination (OrbitControls drags must not destroy)
+  private pointerDownX = 0;
+  private pointerDownY = 0;
+
+  // Gravity comes from DEV B via WORLD_STATE_CHANGED (fallback animation only)
   private gravity = new THREE.Vector3(0, -9.81, 0);
 
-  private fragmentGeometry = new THREE.BoxGeometry(FRAGMENT_SIZE, FRAGMENT_SIZE, FRAGMENT_SIZE);
-  private fragmentMaterial = new THREE.MeshStandardMaterial({ color: 0x99aabb, roughness: 0.6 });
+  private hudElement: HTMLElement | null = null;
+  private hudCountdown = 0;
 
   constructor() {
     this.mesh = new THREE.Group();
-    this.voxelGroup = new THREE.Group();
-    this.fragmentGroup = new THREE.Group();
-    this.mesh.add(this.voxelGroup, this.fragmentGroup);
-
     this.setupEventListeners();
     console.log('[DEV A] Voxel-Renderer initialisiert.');
   }
 
   // ==========================================================================
-  // BUILDING
+  // BUILDING — one InstancedMesh, one draw call
   // ==========================================================================
 
   public createInitialBuilding(width: number, height: number, depth: number): void {
-    const geometry = new THREE.BoxGeometry(1, 1, 1);
-    const material = new THREE.MeshStandardMaterial({ color: 0x8899aa, roughness: 0.4 });
+    const capacity = width * height * depth;
 
+    const voxelGeometry = new THREE.BoxGeometry(1, 1, 1);
+    const voxelMaterial = new THREE.MeshStandardMaterial({ color: 0x8899aa, roughness: 0.4 });
+    this.voxelInstances = new THREE.InstancedMesh(voxelGeometry, voxelMaterial, capacity);
+    this.voxelInstances.frustumCulled = false;
+
+    let slot = 0;
     for (let x = 0; x < width; x++) {
       for (let y = 0; y < height; y++) {
         for (let z = 0; z < depth; z++) {
-          const block = new THREE.Mesh(geometry, material);
           const worldY = y + 0.5;
-          block.position.set(x, worldY, z);
-          block.matrixAutoUpdate = false;
-          block.updateMatrix();
-          this.voxelGroup.add(block);
-          this.voxelMeshes.set(`${x}|${worldY}|${z}`, block);
+          this.scratchMatrix.makeTranslation(x, worldY, z);
+          this.voxelInstances.setMatrixAt(slot, this.scratchMatrix);
+          const key = `${x}|${worldY}|${z}`;
+          this.voxelSlots.set(key, slot);
+          this.voxelSlotKeys[slot] = key;
+          slot++;
         }
       }
     }
+    this.voxelInstances.count = capacity;
+    this.voxelInstances.instanceMatrix.needsUpdate = true;
+
+    // Debris pool: every voxel can become at most one fragment, so the
+    // building volume is the exact upper bound.
+    const fragmentGeometry = new THREE.BoxGeometry(FRAGMENT_SIZE, FRAGMENT_SIZE, FRAGMENT_SIZE);
+    const fragmentMaterial = new THREE.MeshStandardMaterial({ color: 0x99aabb, roughness: 0.6 });
+    this.fragmentInstances = new THREE.InstancedMesh(fragmentGeometry, fragmentMaterial, capacity);
+    this.fragmentInstances.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.fragmentInstances.frustumCulled = false;
+    this.fragmentInstances.count = 0;
+
+    this.mesh.add(this.voxelInstances, this.fragmentInstances);
 
     this.buildingBounds = {
       minX: -0.5, maxX: width - 0.5,
       minY: 0, maxY: height,
       minZ: -0.5, maxZ: depth - 0.5,
     };
-    console.log(`[DEV A] Building created: ${this.voxelMeshes.size} voxels`);
+
+    this.hudElement = document.getElementById('info');
+    console.log(`[DEV A] Building created: ${capacity} voxels (1 draw call)`);
+  }
+
+  /** O(1) instance removal: swap the last instance into the freed slot. */
+  private removeVoxelInstance(key: string): boolean {
+    const slot = this.voxelSlots.get(key);
+    if (slot === undefined) return false;
+
+    const last = this.voxelInstances.count - 1;
+    if (slot !== last) {
+      this.voxelInstances.getMatrixAt(last, this.scratchMatrix);
+      this.voxelInstances.setMatrixAt(slot, this.scratchMatrix);
+      const movedKey = this.voxelSlotKeys[last];
+      this.voxelSlotKeys[slot] = movedKey;
+      this.voxelSlots.set(movedKey, slot);
+    }
+    this.voxelSlotKeys.length = last;
+    this.voxelSlots.delete(key);
+    this.voxelInstances.count = last;
+    this.voxelInstances.instanceMatrix.needsUpdate = true;
+    return true;
   }
 
   // ==========================================================================
-  // PHASE1-A1 — INPUT
-  // R4: picking via 3D-DDA grid ray-march through the voxel hash — cost is
-  // bounded by the ray's path length, not the voxel count.
+  // INPUT — DDA grid ray-march picking, drag-aware clicks
   // ==========================================================================
 
   public setupInputHandling(camera: THREE.Camera): void {
     this.camera = camera;
 
+    window.addEventListener('pointerdown', (event: PointerEvent) => {
+      this.pointerDownX = event.clientX;
+      this.pointerDownY = event.clientY;
+    });
+
     window.addEventListener('click', (event: MouseEvent) => {
       if (!this.camera) return;
+
+      // Camera drags (OrbitControls) must not trigger destruction
+      const dragDistance =
+        Math.abs(event.clientX - this.pointerDownX) + Math.abs(event.clientY - this.pointerDownY);
+      if (dragDistance > 5) return;
 
       const screenPos = new THREE.Vector2(
         (event.clientX / window.innerWidth) * 2 - 1,
@@ -147,7 +213,7 @@ export class VoxelChunkRenderer {
       }
     });
 
-    // DEV-ONLY: mock destruction for testing A2/A3 without DEV B.
+    // DEV-ONLY: mock destruction for testing without DEV B.
     // Usage in browser console:  devA_mockDestruction(2, 5, 2, 2.5)
     (window as any).devA_mockDestruction = (x = 2, y = 5, z = 2, radius = 2.5) => {
       const mockEvent = this.buildMockDestructionEvent({ x, y, z }, radius);
@@ -205,7 +271,6 @@ export class VoxelChunkRenderer {
     const stepY = dy > 0 ? 1 : -1;
     const stepZ = dz > 0 ? 1 : -1;
 
-    // t at which the ray crosses the next cell boundary on each axis
     let tMaxX = Math.abs(dx) < 1e-12 ? Infinity : ((ix + 0.5 * stepX) - ox) / dx;
     let tMaxY = Math.abs(dy) < 1e-12 ? Infinity : ((gy + (stepY > 0 ? 1 : 0)) - oy) / dy;
     let tMaxZ = Math.abs(dz) < 1e-12 ? Infinity : ((iz + 0.5 * stepZ) - oz) / dz;
@@ -219,11 +284,10 @@ export class VoxelChunkRenderer {
       (b.maxX - b.minX + b.maxY - b.minY + b.maxZ - b.minZ + 3) | 0;
 
     for (let step = 0; step <= maxSteps; step++) {
-      if (this.voxelMeshes.has(`${ix}|${gy + 0.5}|${iz}`)) {
+      if (this.voxelSlots.has(`${ix}|${gy + 0.5}|${iz}`)) {
         return new THREE.Vector3(ox + dx * t, oy + dy * t, oz + dz * t);
       }
 
-      // Advance to the next cell along the axis with the nearest boundary
       if (tMaxX <= tMaxY && tMaxX <= tMaxZ) {
         t = tMaxX;
         ix += stepX;
@@ -244,16 +308,14 @@ export class VoxelChunkRenderer {
   }
 
   // ==========================================================================
-  // PHASE1-A2 — DESTRUCTION RENDERING (event listeners)
+  // DESTRUCTION RENDERING (event listeners)
   // ==========================================================================
 
   private setupEventListeners(): void {
-    // Destruction from DEV B → remove voxels + spawn fragment meshes
     globalEventBus.subscribe(EventType.DESTRUCTION_TRIGGERED, (msg) => {
       this.handleDestructionTriggered(msg.payload as DestructionEvent);
     });
 
-    // Individual fragments announced by DEV B (PHASE1-B3) → mark physics-driven
     globalEventBus.subscribe(EventType.FRAGMENT_CREATED, (msg) => {
       const fragment = msg.payload as Fragment;
       const tracked = this.fragments.get(fragment.id);
@@ -261,12 +323,10 @@ export class VoxelChunkRenderer {
         tracked.physicsDriven = true;
         this.fallbackFragments.delete(fragment.id);
       } else {
-        // DEV B knows a fragment we don't render yet → create it
-        this.spawnFragmentMesh(fragment, true);
+        this.spawnFragment(fragment, true);
       }
     });
 
-    // World state (gravity etc.) from DEV B — used for visual fallback animation
     globalEventBus.subscribe(EventType.WORLD_STATE_CHANGED, (msg) => {
       const state = msg.payload as WorldState;
       if (state?.gravity) {
@@ -274,96 +334,94 @@ export class VoxelChunkRenderer {
       }
     });
 
-    // Physics step → move fragment meshes to the authoritative RAPIER
+    // Physics step → move fragment instances to the authoritative RAPIER
     // transforms. SYNCHRONOUS listener, for..in iteration, immediate copy:
     // DEV B reuses the payload object across frames (R3 contract).
     globalEventBus.subscribe(EventType.PHYSICS_STEP_COMPLETE, (msg) => {
       const payload = msg.payload as Partial<PhysicsStepPayload>;
 
       const transforms = payload.fragmentTransforms;
+      let touched = false;
       if (transforms) {
         for (const id in transforms) {
           const tracked = this.fragments.get(id);
-          if (!tracked) continue;
+          const slot = this.fragSlots.get(id);
+          if (!tracked || slot === undefined) continue;
           tracked.physicsDriven = true;
           this.fallbackFragments.delete(id);
+
           const transform = transforms[id];
-          tracked.mesh.position.set(transform.position.x, transform.position.y, transform.position.z);
-          tracked.mesh.quaternion.set(transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w);
+          this.scratchVec.set(transform.position.x, transform.position.y, transform.position.z);
+          this.scratchQuat.set(transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w);
+          this.scratchMatrix.compose(this.scratchVec, this.scratchQuat, VoxelChunkRenderer.UNIT_SCALE);
+          this.fragmentInstances.setMatrixAt(slot, this.scratchMatrix);
+          tracked.position.copy(this.scratchVec);
+          touched = true;
         }
       }
 
-      // Settled rubble: mesh stays visible at its final transform, but leaves
-      // all per-frame tracking (mirrors DEV B retiring the body to FIXED)
+      // Settled rubble: instance stays frozen at its final transform,
+      // but leaves all per-frame tracking (mirrors DEV B's FIXED retirement)
       const settled = payload.settledFragments;
       if (settled) {
         for (let i = 0; i < settled.length; i++) {
-          this.fragments.delete(settled[i]);
+          if (this.fragments.delete(settled[i])) this.settledCount++;
           this.fallbackFragments.delete(settled[i]);
         }
       }
 
-      // Kill-plane culls: DEV B removed the body — remove the mesh too
+      // Kill-plane culls: DEV B removed the body — free the instance slot
       const culled = payload.culledFragments;
       if (culled) {
         for (let i = 0; i < culled.length; i++) {
-          const tracked = this.fragments.get(culled[i]);
-          if (tracked) this.fragmentGroup.remove(tracked.mesh);
-          this.fragments.delete(culled[i]);
-          this.fallbackFragments.delete(culled[i]);
+          this.freeFragmentSlot(culled[i]);
+          touched = true;
         }
       }
+
+      if (touched) this.fragmentInstances.instanceMatrix.needsUpdate = true;
     });
   }
 
   private handleDestructionTriggered(event: DestructionEvent): void {
-    // R4: fragments carry the exact voxel-center positions from DEV B's
-    // structural model — keyed lookups instead of scanning every mesh.
-    const doomed = new Set<THREE.Object3D>();
+    // Fragments carry the exact voxel-center positions from DEV B's
+    // structural model — keyed O(1) lookups + swap-with-last removal.
+    let removed = 0;
     for (const fragment of event.fragments) {
       const key = `${fragment.position.x}|${fragment.position.y}|${fragment.position.z}`;
-      const voxelMesh = this.voxelMeshes.get(key);
-      if (voxelMesh) {
-        doomed.add(voxelMesh);
-        this.voxelMeshes.delete(key);
-      }
-      this.spawnFragmentMesh(fragment, false);
+      if (this.removeVoxelInstance(key)) removed++;
+      this.spawnFragment(fragment, false);
     }
-
-    // Single O(N) sweep instead of k separate O(N) Group.remove() splices.
-    // (Bypasses Three's remove() event dispatch — voxel meshes have no listeners.)
-    if (doomed.size > 0) {
-      const kept: THREE.Object3D[] = [];
-      for (const child of this.voxelGroup.children) {
-        if (doomed.has(child)) {
-          (child as { parent: THREE.Object3D | null }).parent = null;
-        } else {
-          kept.push(child);
-        }
-      }
-      this.voxelGroup.children = kept;
-    }
+    this.fragmentInstances.instanceMatrix.needsUpdate = true;
 
     console.log(
-      `[DEV A] Destruction rendered: ${doomed.size} voxels removed, ${event.fragments.length} fragments spawned`
+      `[DEV A] Destruction rendered: ${removed} voxels removed, ${event.fragments.length} fragments spawned`
     );
   }
 
-  private spawnFragmentMesh(fragment: Fragment, physicsDriven: boolean): void {
-    if (this.fragments.has(fragment.id)) return;
+  private spawnFragment(fragment: Fragment, physicsDriven: boolean): void {
+    if (this.fragSlots.has(fragment.id)) return;
+    if (this.fragCount >= this.fragmentInstances.instanceMatrix.count) return; // pool exhausted (cannot happen: 1 voxel → 1 fragment)
 
-    const mesh = new THREE.Mesh(this.fragmentGeometry, this.fragmentMaterial);
-    mesh.position.set(fragment.position.x, fragment.position.y, fragment.position.z);
-    this.fragmentGroup.add(mesh);
+    const slot = this.fragCount++;
+    this.fragmentInstances.count = this.fragCount;
+    this.fragSlots.set(fragment.id, slot);
+    this.fragSlotOwner[slot] = fragment.id;
+
+    this.scratchMatrix.makeTranslation(fragment.position.x, fragment.position.y, fragment.position.z);
+    this.fragmentInstances.setMatrixAt(slot, this.scratchMatrix);
 
     this.fragments.set(fragment.id, {
-      mesh,
+      position: new THREE.Vector3(fragment.position.x, fragment.position.y, fragment.position.z),
       velocity: new THREE.Vector3(fragment.velocity.x, fragment.velocity.y, fragment.velocity.z),
       angularVelocity: new THREE.Vector3(
         (fragment.position.x % 1) * 4 - 2,
         (fragment.position.y % 1) * 4 - 2,
         (fragment.position.z % 1) * 4 - 2
       ),
+      rotX: 0,
+      rotY: 0,
+      rotZ: 0,
       physicsDriven,
     });
     if (!physicsDriven) {
@@ -371,43 +429,76 @@ export class VoxelChunkRenderer {
     }
   }
 
+  /** O(1) slot release: swap the last instance (possibly settled rubble) in. */
+  private freeFragmentSlot(id: string): void {
+    const slot = this.fragSlots.get(id);
+    if (slot !== undefined) {
+      const last = this.fragCount - 1;
+      if (slot !== last) {
+        this.fragmentInstances.getMatrixAt(last, this.scratchMatrix);
+        this.fragmentInstances.setMatrixAt(slot, this.scratchMatrix);
+        const movedId = this.fragSlotOwner[last];
+        this.fragSlotOwner[slot] = movedId;
+        this.fragSlots.set(movedId, slot);
+      }
+      this.fragSlotOwner.length = last;
+      this.fragSlots.delete(id);
+      this.fragCount = last;
+      this.fragmentInstances.count = last;
+    }
+    this.fragments.delete(id);
+    this.fallbackFragments.delete(id);
+  }
+
   // ==========================================================================
-  // PHASE1-A3 — PER-FRAME FALLBACK ANIMATION & CLEANUP
+  // PER-FRAME FALLBACK ANIMATION, CLEANUP & HUD
   // Called from main.ts render loop with delta time (seconds).
-  // R4: iterates ONLY fragments still in fallback mode — physics-driven
+  // Iterates ONLY fragments still in fallback mode — physics-driven
   // fragments are updated exclusively by the step_complete listener.
   // ==========================================================================
 
   public update(deltaTime: number): void {
-    if (this.fallbackFragments.size === 0) return;
+    if (this.fallbackFragments.size > 0) {
+      this.cullScratch.length = 0;
 
-    this.cullScratch.length = 0;
+      for (const id of this.fallbackFragments) {
+        const f = this.fragments.get(id);
+        const slot = this.fragSlots.get(id);
+        if (!f || slot === undefined) {
+          this.cullScratch.push(id);
+          continue;
+        }
 
-    for (const id of this.fallbackFragments) {
-      const f = this.fragments.get(id);
-      if (!f) {
-        this.cullScratch.push(id);
-        continue;
+        f.velocity.addScaledVector(this.gravity, deltaTime);
+        f.position.addScaledVector(f.velocity, deltaTime);
+        f.rotX += f.angularVelocity.x * deltaTime;
+        f.rotY += f.angularVelocity.y * deltaTime;
+        f.rotZ += f.angularVelocity.z * deltaTime;
+
+        this.scratchEuler.set(f.rotX, f.rotY, f.rotZ);
+        this.scratchQuat.setFromEuler(this.scratchEuler);
+        this.scratchMatrix.compose(f.position, this.scratchQuat, VoxelChunkRenderer.UNIT_SCALE);
+        this.fragmentInstances.setMatrixAt(slot, this.scratchMatrix);
+
+        if (f.position.y < FRAGMENT_KILL_Y) {
+          this.cullScratch.push(id);
+        }
       }
 
-      // Visual fallback — only until DEV B drives the transform
-      f.velocity.addScaledVector(this.gravity, deltaTime);
-      f.mesh.position.addScaledVector(f.velocity, deltaTime);
-      f.mesh.rotation.x += f.angularVelocity.x * deltaTime;
-      f.mesh.rotation.y += f.angularVelocity.y * deltaTime;
-      f.mesh.rotation.z += f.angularVelocity.z * deltaTime;
-
-      if (f.mesh.position.y < FRAGMENT_KILL_Y) {
-        this.cullScratch.push(id);
+      for (let i = 0; i < this.cullScratch.length; i++) {
+        this.freeFragmentSlot(this.cullScratch[i]);
       }
+      this.fragmentInstances.instanceMatrix.needsUpdate = true;
     }
 
-    for (let i = 0; i < this.cullScratch.length; i++) {
-      const id = this.cullScratch[i];
-      const f = this.fragments.get(id);
-      if (f) this.fragmentGroup.remove(f.mesh);
-      this.fragments.delete(id);
-      this.fallbackFragments.delete(id);
+    // HUD refresh (cheap DOM write, throttled)
+    if (--this.hudCountdown <= 0) {
+      this.hudCountdown = HUD_UPDATE_INTERVAL;
+      if (this.hudElement) {
+        this.hudElement.textContent =
+          `Klick: zerstören · Ziehen: Kamera · Scrollen: Zoom   |   ` +
+          `Voxel: ${this.voxelSlots.size} · Trümmer: ${this.fragments.size} aktiv / ${this.settledCount} Schutt`;
+      }
     }
   }
 
@@ -420,7 +511,7 @@ export class VoxelChunkRenderer {
   }
 
   public getVoxelCount(): number {
-    return this.voxelMeshes.size;
+    return this.voxelSlots.size;
   }
 
   /** Builds a fake DestructionEvent from real voxel positions (mock testing only). */
@@ -431,10 +522,15 @@ export class VoxelChunkRenderer {
     const fragments: Fragment[] = [];
     const radiusSq = radius * radius;
 
-    for (const [, voxelMesh] of this.voxelMeshes) {
-      const dx = voxelMesh.position.x - position.x;
-      const dy = voxelMesh.position.y - position.y;
-      const dz = voxelMesh.position.z - position.z;
+    for (const key of this.voxelSlots.keys()) {
+      const parts = key.split('|');
+      const vx = Number(parts[0]);
+      const vy = Number(parts[1]);
+      const vz = Number(parts[2]);
+
+      const dx = vx - position.x;
+      const dy = vy - position.y;
+      const dz = vz - position.z;
       const distSq = dx * dx + dy * dy + dz * dz;
       if (distSq > radiusSq) continue;
 
@@ -442,8 +538,8 @@ export class VoxelChunkRenderer {
       const len = Math.max(dist, 1e-6);
       const strength = (1 - dist / radius) * 8;
       fragments.push({
-        id: `mock_frag_${voxelMesh.id}`,
-        position: { x: voxelMesh.position.x, y: voxelMesh.position.y, z: voxelMesh.position.z },
+        id: `mock_frag_${key}`,
+        position: { x: vx, y: vy, z: vz },
         velocity: {
           x: (dx / len) * strength,
           y: Math.abs(dy / len) * strength + 2,

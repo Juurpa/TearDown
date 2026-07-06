@@ -19,7 +19,7 @@
   - Emit with `priority: 'HIGH'` for responsive destruction
 - **Dependencies:** None (sync-protocol.ts ready)
 - **Acceptance:** Can click on voxels and receive destruction events
-- **Status:** ⏳ TODO
+- **Status:** ✅ DONE
 
 #### [PHASE1-B1] DEV B: Add Destruction Event Emission
 - **File:** `src/physics/DestructionPhysics.ts`
@@ -32,7 +32,7 @@
   - Emit with `priority: 'HIGH'`
 - **Dependencies:** PHASE1-B2 (Fragment detection)
 - **Acceptance:** Destruction events reach DEV A with fragment data
-- **Status:** ⏳ TODO
+- **Status:** ✅ DONE
 
 #### [PHASE1-B2] DEV B: Fragment Detection Logic
 - **File:** `src/physics/DestructionPhysics.ts`
@@ -48,7 +48,7 @@
   - Return array of Fragment[] for emission
 - **Dependencies:** None
 - **Acceptance:** Fragment objects properly structured with physics data
-- **Status:** ⏳ TODO
+- **Status:** ✅ DONE
 
 #### [PHASE1-A2] DEV A: Handle Destruction Rendering
 - **File:** `src/rendering/VoxelChunkRenderer.ts`
@@ -61,7 +61,7 @@
   - Scale down fragments for visual effect
 - **Dependencies:** PHASE1-B1 (fragment data from physics)
 - **Acceptance:** Click on building → voxels disappear → fragments fall with physics
-- **Status:** ⏳ TODO
+- **Status:** ✅ DONE
 
 #### [PHASE1-B3] DEV B: Fragment Physics Bodies
 - **File:** `src/physics/DestructionPhysics.ts`
@@ -74,7 +74,7 @@
   - Emit `physics:fragment_created` for each (so DEV A can track)
 - **Dependencies:** PHASE1-B2 (Fragment creation)
 - **Acceptance:** Fragments fall with gravity in physics simulation
-- **Status:** ⏳ TODO
+- **Status:** ✅ DONE
 
 #### [PHASE1-A3] DEV A: Mesh Instance Tracking
 - **File:** `src/rendering/VoxelChunkRenderer.ts`
@@ -86,7 +86,7 @@
   - Clean up fragments when they fall out of bounds
 - **Dependencies:** PHASE1-B3 (fragment bodies from physics)
 - **Acceptance:** Fragment meshes move in sync with physics bodies
-- **Status:** ⏳ TODO
+- **Status:** ✅ DONE
 
 ---
 
@@ -159,12 +159,12 @@ Recommendation: Start with B2, B3, A1 in parallel → then A2
 
 | Task | DEV | Status | PR/Commit |
 |------|-----|--------|-----------|
-| PHASE1-A1 | A | ⏳ TODO | - |
-| PHASE1-B1 | B | ⏳ TODO | - |
-| PHASE1-B2 | B | ⏳ TODO | - |
-| PHASE1-A2 | A | ⏳ TODO | - |
-| PHASE1-B3 | B | ⏳ TODO | - |
-| PHASE1-A3 | A | ⏳ TODO | - |
+| PHASE1-A1 | A | ✅ DONE | b9dd4ae |
+| PHASE1-B1 | B | ✅ DONE | 9678b8a |
+| PHASE1-B2 | B | ✅ DONE | 9678b8a |
+| PHASE1-A2 | A | ✅ DONE | 2bace02 |
+| PHASE1-B3 | B | ✅ DONE | 9678b8a |
+| PHASE1-A3 | A | ✅ DONE | 2bace02 |
 
 ---
 

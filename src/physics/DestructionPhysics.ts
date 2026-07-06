@@ -49,6 +49,8 @@ const PHYSICS_CONFIG = {
   killPlaneY: -25,          // remove bodies that fell off the world
   restitution: 0.3,
   friction: 0.8,
+  linearDamping: 0.05,      // mild air drag
+  angularDamping: 0.6,      // tumbling debris grinds to a halt realistically
 };
 
 export class DestructionPhysics {
@@ -240,6 +242,8 @@ export class DestructionPhysics {
       const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(fragment.position.x, fragment.position.y, fragment.position.z)
         .setLinvel(fragment.velocity.x, fragment.velocity.y, fragment.velocity.z)
+        .setLinearDamping(PHYSICS_CONFIG.linearDamping)
+        .setAngularDamping(PHYSICS_CONFIG.angularDamping)
         .setAngvel({
           x: fragment.velocity.z * 0.5, // tumble derived from lateral motion (deterministic)
           y: fragment.velocity.x * 0.3,

@@ -173,27 +173,26 @@ globalEventBus.subscribe(EventType.DESTRUCTION_TRIGGERED, async (msg) => {
 
 ## 🎯 Current Development Status
 
-### ✅ Implemented
-- Physics engine initialization (RAPIER3D)
-- Voxel chunk rendering (Three.js)
-- Dual-agent sync system (SyncEventBus)
-- Event protocol with typed messages
-- Main loop orchestration
+### ✅ Phase 1 — COMPLETE (playable)
+- Physics engine initialization (RAPIER3D) + structural voxel model
+- Click-to-destroy: DDA grid-raymarch picking → fragmentation → falling debris
+- Dual-agent sync system (SyncEventBus, enqueue-only + per-frame flush)
+- Fragment physics bodies with damping; debris settles into static rubble
+- Orbit camera (drag to rotate, scroll to zoom — clicks stay destructive)
+- Live HUD (voxel / active debris / rubble counters)
 
-### ⏳ In Progress (Phase 1)
-- [PHASE1-A1] Click input handler (DEV A)
-- [PHASE1-B2] Fragment detection logic (DEV B)
-- [PHASE1-B1] Destruction event emission (DEV B)
-- [PHASE1-A2] Fragment visualization (DEV A)
-- [PHASE1-B3] Physics bodies for fragments (DEV B)
-- [PHASE1-A3] Mesh instance tracking (DEV A)
+### ✅ Performance Hardening (skill-audit verified)
+- InstancedMesh rendering: whole building = 1 draw call, all debris = 1 draw call
+- Zero per-frame allocations (pooled transforms, reused payloads, scratch math)
+- All voxel queries bounded by blast radius via "x|y|z" spatial hash
+- O(1) instance removal (swap-with-last)
+- Settled debris retires from all per-frame loops (FIXED bodies, still tangible)
 
 ### 🔮 Planned (Phase 2+)
-- Chunk-based spatial optimization
-- Level-of-detail (LOD) rendering
-- Constraint-based structural integrity
+- Constraint-based structural integrity (unsupported voxels collapse)
+- Chunked buildings & greedy meshing for city-scale scenes
 - Sound effects & particle effects
-- Multiplayer support
+- Material types (concrete, glass, wood) with distinct fracture behavior
 
 ---
 
