@@ -56,15 +56,22 @@ COMMUNICATION METHOD = SyncEventBus (src/shared/sync-protocol.ts)
 
 ```
 Frame N:
-├─ 1. DEV B: stepPhysics() [SYNC]
-├─ 2. DEV B: emit 'physics:step_complete' [ASYNC]
-├─ 3. DEV B: detectDestructions() + emit 'physics:destruction_triggered' [ASYNC, HIGH PRIORITY]
-├─ 4. DEV A: onPhysicsUpdate() listener executes [ASYNC]
-├─ 5. DEV A: renderer.render() [SYNC]
-├─ 6. DEV A: onUserInput() → emit 'render:destruction_input' [ASYNC]
-└─ 7. DEV B: listener executes in Frame N+1
+├─ 1. DEV B: stepPhysics() [SYNC] — enqueues 'physics:step_complete'
+├─ 2. MAIN:  bus.flush() — THE single delivery point per frame:
+│           queued click input → DEV B fragmentation → destruction/
+│           transform events → DEV A applies them, in order
+├─ 3. DEV A: update(dt) — fallback animation for fragments not yet
+│           physics-driven
+├─ 4. DEV A: renderer.render() [SYNC]
+└─ 5. Browser click events enqueue 'render:destruction_input'
+      (HIGH priority) → processed in Frame N+1's flush
 
-Result: Zero blocking, parallel async execution paths
+Rules:
+- emit() is ENQUEUE-ONLY. No listener ever runs on the emitter's
+  call stack — cross-agent calls are physically impossible.
+- The 'physics:step_complete' payload object is REUSED across frames
+  (GC-spike prevention). Listeners must copy values immediately and
+  never retain a reference past the flush.
 ```
 
 ### Message Priority System
@@ -104,11 +111,15 @@ LOW PRIORITY (Diagnostics)     → Process when queue clear
 ### DEV B → DEV A
 
 ```typescript
-// Physics step complete (every frame)
+// Physics step complete (every frame) — payload: PhysicsStepPayload
+// NOTE: DEV B reuses this object across frames. Copy values immediately.
 'physics:step_complete' : {
   frameCount: number,
   time: number,
-  worldState: WorldState
+  worldState: WorldState,
+  fragmentTransforms: Record<fragmentId, { position, rotation }>, // awake bodies
+  settledFragments: string[],  // came to rest → now static rubble, stop tracking
+  culledFragments: string[]    // fell below kill plane → delete meshes
 }
 
 // Destruction event triggered

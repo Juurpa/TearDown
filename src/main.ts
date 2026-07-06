@@ -51,23 +51,22 @@ async function bootstrap() {
   // UI Info
   document.getElementById('info')!.innerText = 'ENGINE RUNNING: Click to destroy (Ready)';
 
-  // Main Loop — Non-blocking async execution
+  // Main Loop — deterministic per-frame order:
+  //   1. DEV B steps physics (enqueues step_complete)
+  //   2. Bus flush: THE single controlled delivery point per frame.
+  //      Queued input → DEV B fragmentation → destruction/transform events
+  //      → DEV A applies them. No listener ever runs on an emitter's stack.
+  //   3. DEV A fallback animation + render
+  const bus = globalEventBus;
   const clock = new THREE.Clock();
   function animate() {
     requestAnimationFrame(animate);
     const deltaTime = Math.min(clock.getDelta(), 0.1); // clamp against tab-switch spikes
 
-    // DEV B: Physics step (synchronous, core update)
     devB_Physics.stepPhysics();
-
-    // DEV A: Fragment animation & cleanup, then render
+    bus.flush();
     devA_Renderer.update(deltaTime);
     renderer.render(scene, camera);
-
-    // NOTE: Event processing happens asynchronously via SyncEventBus
-    // DEV B emits → DEV A listens (next frame or immediate)
-    // DEV A emits → DEV B listens (next physics step)
-    // No blocking, no waiting
   }
 
   animate();
