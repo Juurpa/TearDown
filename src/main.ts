@@ -48,13 +48,16 @@ async function bootstrap() {
   document.getElementById('info')!.innerText = 'ENGINE RUNNING: Click to destroy (Ready)';
 
   // Main Loop — Non-blocking async execution
+  const clock = new THREE.Clock();
   function animate() {
     requestAnimationFrame(animate);
+    const deltaTime = Math.min(clock.getDelta(), 0.1); // clamp against tab-switch spikes
 
     // DEV B: Physics step (synchronous, core update)
     devB_Physics.stepPhysics();
 
-    // DEV A: Render (synchronous)
+    // DEV A: Fragment animation & cleanup, then render
+    devA_Renderer.update(deltaTime);
     renderer.render(scene, camera);
 
     // NOTE: Event processing happens asynchronously via SyncEventBus
