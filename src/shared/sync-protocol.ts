@@ -131,7 +131,11 @@ export class SyncEventBus {
       const callbacks = this.listeners.get(message.type) || [];
 
       // Fire all callbacks (parallel, non-blocking)
-      await Promise.all(callbacks.map(cb => cb(message).catch(console.error)));
+      await Promise.all(
+        callbacks.map(cb =>
+          Promise.resolve(cb(message)).catch(console.error)
+        )
+      );
     }
     this.isProcessing = false;
   }

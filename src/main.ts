@@ -34,26 +34,34 @@ async function bootstrap() {
   const devA_Renderer = new VoxelChunkRenderer();
   const devB_Physics = new DestructionPhysics();
 
-  // DEV B initialization
+  // Building dimensions — single source shared by both agents
+  const BUILDING = { width: 5, height: 10, depth: 5 };
+
+  // DEV B initialization + structural model (physics owns structure data)
   await devB_Physics.init();
+  devB_Physics.createBuildingData(BUILDING.width, BUILDING.height, BUILDING.depth);
   console.log('[MAIN] DEV B (Physics) initialized');
 
-  // DEV A: Create initial structure
-  devA_Renderer.createInitialBuilding(5, 10, 5);
+  // DEV A: Create initial structure and setup input handling
+  devA_Renderer.createInitialBuilding(BUILDING.width, BUILDING.height, BUILDING.depth);
+  devA_Renderer.setupInputHandling(camera);
   scene.add(devA_Renderer.mesh);
-  console.log('[MAIN] DEV A (Renderer) initialized');
+  console.log('[MAIN] DEV A (Renderer) initialized with click input');
 
   // UI Info
   document.getElementById('info')!.innerText = 'ENGINE RUNNING: Click to destroy (Ready)';
 
   // Main Loop — Non-blocking async execution
+  const clock = new THREE.Clock();
   function animate() {
     requestAnimationFrame(animate);
+    const deltaTime = Math.min(clock.getDelta(), 0.1); // clamp against tab-switch spikes
 
     // DEV B: Physics step (synchronous, core update)
     devB_Physics.stepPhysics();
 
-    // DEV A: Render (synchronous)
+    // DEV A: Fragment animation & cleanup, then render
+    devA_Renderer.update(deltaTime);
     renderer.render(scene, camera);
 
     // NOTE: Event processing happens asynchronously via SyncEventBus
