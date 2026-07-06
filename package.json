@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/fix-bom.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/fix-bom.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
