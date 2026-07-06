@@ -39,9 +39,18 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
-# 5. Starten
+# 5. Starten — Browser oeffnet erst, wenn der Server wirklich antwortet
 echo ""
 echo " [START] Spiel startet auf http://localhost:5173"
+echo " [INFO]  Dieses Terminal offen lassen - es IST der Server."
 echo ""
-(sleep 3 && (open http://localhost:5173 2>/dev/null || xdg-open http://localhost:5173 2>/dev/null)) &
+(
+  for i in $(seq 1 180); do
+    if curl -s -o /dev/null --max-time 1 http://localhost:5173; then
+      open http://localhost:5173 2>/dev/null || xdg-open http://localhost:5173 2>/dev/null
+      break
+    fi
+    sleep 1
+  done
+) &
 npm run dev

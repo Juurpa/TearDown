@@ -51,12 +51,15 @@ if not exist "node_modules" (
     )
 )
 
-REM ---- 5. Browser oeffnen und Spiel starten ------------------
+REM ---- 5. Browser oeffnen sobald der Server WIRKLICH laeuft ---
 echo.
 echo  [START] Spiel startet auf http://localhost:5173
-echo  [INFO]  Zum Beenden dieses Fenster schliessen (oder Strg+C)
+echo  [INFO]  Browser oeffnet sich automatisch, sobald der Server bereit ist.
+echo  [INFO]  Dieses Fenster offen lassen - es IST der Server!
+echo          (Zum Beenden: Fenster schliessen oder Strg+C)
 echo.
-start /b cmd /c "timeout /t 3 >nul & start http://localhost:5173"
+start "" /b powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "for ($i = 0; $i -lt 180; $i++) { try { $null = Invoke-WebRequest -Uri 'http://localhost:5173' -UseBasicParsing -TimeoutSec 1; Start-Process 'http://localhost:5173'; break } catch { Start-Sleep -Seconds 1 } }"
 call npm run dev
 
 pause
