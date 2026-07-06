@@ -34,12 +34,16 @@ async function bootstrap() {
   const devA_Renderer = new VoxelChunkRenderer();
   const devB_Physics = new DestructionPhysics();
 
-  // DEV B initialization
+  // Building dimensions — single source shared by both agents
+  const BUILDING = { width: 5, height: 10, depth: 5 };
+
+  // DEV B initialization + structural model (physics owns structure data)
   await devB_Physics.init();
+  devB_Physics.createBuildingData(BUILDING.width, BUILDING.height, BUILDING.depth);
   console.log('[MAIN] DEV B (Physics) initialized');
 
   // DEV A: Create initial structure and setup input handling
-  devA_Renderer.createInitialBuilding(5, 10, 5);
+  devA_Renderer.createInitialBuilding(BUILDING.width, BUILDING.height, BUILDING.depth);
   devA_Renderer.setupInputHandling(camera);
   scene.add(devA_Renderer.mesh);
   console.log('[MAIN] DEV A (Renderer) initialized with click input');
